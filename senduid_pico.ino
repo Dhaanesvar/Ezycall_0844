@@ -1,4 +1,5 @@
 #include <W55RP20_Ethernet3.h>
+#include <EEPROM.h>
 
 // Default values
 byte mac[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED};
@@ -9,14 +10,42 @@ IPAddress gateway(13, 22, 0, 1);
 IPAddress ledIP(13, 22, 255, 15);
 const int ledPort = 1884;
 
-String UID = "0d-16";
+String companyUID = "";
 String input = "";
-
 bool ethernetNeedsRestart = false;
+
+// EEPROM address for storing UID
+const int uidAddress = 0;
+const int uidMaxLength = 32;
+
+void loadUID() {
+  String uid = "";
+  for (int i = 0; i < uidMaxLength; i++) {
+    char c = EEPROM.read(uidAddress + i);
+    if (c == 0) break;
+    uid += c;
+  }
+  if (uid.length() > 0) {
+    companyUID = uid;
+  } else {
+    companyUID = "0d-16";  // default if nothing saved
+  }
+}
+
+void saveUID() {
+  for (int i = 0; i < companyUID.length(); i++) {
+    EEPROM.write(uidAddress + i, companyUID[i]);
+  }
+  EEPROM.write(uidAddress + companyUID.length(), 0); // null terminator
+  EEPROM.commit();
+}
 
 void setup() {
   Serial2.begin(115200, SERIAL_8N1);
   delay(100);
+  
+  EEPROM.begin(512);
+  loadUID();
   
   pinMode(20, OUTPUT);
   digitalWrite(20, HIGH);
@@ -27,8 +56,8 @@ void setup() {
   Serial2.println("W55RP20 Ready.");
   Serial2.println("");
   Serial2.println("=== COMMANDS ===");
-  Serial2.println("GETUID      - Show current MAC, IP, UID");
-  Serial2.println("SETUID xxxx - Set new UID");
+  Serial2.println("GETUID      - Show current MAC, IP, Company UID");
+  Serial2.println("SETUID xxxx - Set new Company UID (saved permanently)");
   Serial2.println("SETIP x.x.x.x - Set new IP address");
   Serial2.println("RESTART     - Restart Ethernet");
   Serial2.println("SEND |SEVT|... - Send command to LED");
@@ -90,18 +119,20 @@ void processCommand(String cmd) {
     Serial2.println(subnet);
     Serial2.print("Gateway: ");
     Serial2.println(gateway);
-    Serial2.print("UID: ");
-    Serial2.println(UID);
+    Serial2.print("Company UID: ");
+    Serial2.println(companyUID);
     Serial2.println("=================");
     Serial2.println("");
     return;
   }
   
-  // SETUID xxxx - Set new Company UID
+  // SETUID xxxx - Set new Company UID (saved to EEPROM)
   if (cmd.startsWith("SETUID ")) {
-    UID = cmd.substring(7);
-    Serial2.print("UID set to: ");
-    Serial2.println(UID);
+    companyUID = cmd.substring(7);
+    saveUID();
+    Serial2.print("Company UID set to: ");
+    Serial2.println(companyUID);
+    Serial2.println("UID saved permanently. Will survive power loss.");
     return;
   }
   

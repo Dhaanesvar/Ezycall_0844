@@ -25,11 +25,11 @@
 #ifndef PIN_LED1
 #define PIN_LED1  46
 #define PIN_LED2  45
-#endif
 
-// LED status indicators
-#define LED_RED     35
-#define LED_GREEN   34
+#define PIN_LED_RED   33
+#define PIN_LED_GREEN 34
+
+#endif
 
 // --- RadioLib ---
 #include <RadioLib.h>
@@ -137,13 +137,6 @@ struct DownlinkStateTracker {
   char lastDownlinkHex[256] = "";
   char lastDownlinkAscii[128] = "";
 } dlTracker;
-
-// LED status tracking
-bool systemJoined = false;       // true after successful join
-bool activityActive = false;     // true during downlink activity
-unsigned long lastGreenBlink = 0;
-bool greenLedOn = false;
-bool redBlinkForever = false;    // ADDED: infinite red blink on error
 
 void addDownlink(const char* t, const char* hex, const char* ascii, int len, uint8_t fport) {
   DownlinkEntry& e = downlinks[downlinkHead];
@@ -368,23 +361,19 @@ bool prepareCredentials() {
     uint64_t joinEUI64 = 0, devEUI64 = 0;
     if (!parseHexU64MsbFirst(cfg.joinEUI, &joinEUI64)) {
       addLog("ERROR", "OTAA: JoinEUI parse failed (expect 16 hex chars, MSB first).");
-      redBlinkForever = true;
       return false;
     }
     if (!parseHexU64MsbFirst(cfg.devEUI, &devEUI64)) {
       addLog("ERROR", "OTAA: DevEUI parse failed (expect 16 hex chars, MSB first).");
-      redBlinkForever = true;
       return false;
     }
     if (!parseHexString(cfg.appKey, binAppKey, 16)) {
       addLog("ERROR", "OTAA: AppKey parse failed (expect 32 hex chars).");
-      redBlinkForever = true;
       return false;
     }
     if (strlen(cfg.nwkKey) >= 32) {
       if (!parseHexString(cfg.nwkKey, binNwkKey, 16)) {
         addLog("ERROR", "OTAA: NwkKey parse failed.");
-        redBlinkForever = true;
         return false;
       }
     } else {
@@ -398,24 +387,20 @@ bool prepareCredentials() {
   if (!strcasecmp(cfg.mode, "ABP")) {
     if (!parseHexU32(cfg.devAddr, &binDevAddr)) {
       addLog("ERROR", "ABP: DevAddr parse failed (8 hex chars).");
-      redBlinkForever = true;
       return false;
     }
     if (!parseHexString(cfg.nwkSKey, binNwkSKey, 16)) {
       addLog("ERROR", "ABP: NwkSKey parse failed.");
-      redBlinkForever = true;
       return false;
     }
     if (!parseHexString(cfg.appSKey, binAppSKey, 16)) {
       addLog("ERROR", "ABP: AppSKey parse failed.");
-      redBlinkForever = true;
       return false;
     }
     return true;
   }
 
   addLog("ERROR", "Unknown mode (use OTAA or ABP).");
-  redBlinkForever = true;
   return false;
 }
 
@@ -458,7 +443,6 @@ int initRadioPhy() {
   if (st != RADIOLIB_ERR_NONE) {
     addLog("ERROR", String("radio.begin failed: ") + lwErrStr(st));
     g_radioPhyReady = false;
-    redBlinkForever = true;
     return st;
   }
 
@@ -470,21 +454,14 @@ int initRadioPhy() {
 
 bool doJoin() {
   addLog("INFO", "══ Join / activate started ══");
-  if (!prepareCredentials()) {
-    redBlinkForever = true;
-    return false;
-  }
+  if (!prepareCredentials()) return false;
 
   destroyLoRaWAN();
 
-  if (initRadioPhy() != RADIOLIB_ERR_NONE) {
-    redBlinkForever = true;
-    return false;
-  }
+  if (initRadioPhy() != RADIOLIB_ERR_NONE) return false;
 
   if (!createLoRaWAN()) {
     addLog("ERROR", "LoRaWANNode allocation failed.");
-    redBlinkForever = true;
     return false;
   }
 
@@ -498,7 +475,6 @@ bool doJoin() {
     st = lorawan->beginOTAA(joinEUI, devEUI, binNwkKey, binAppKey);
     if (st != RADIOLIB_ERR_NONE) {
       addLog("ERROR", String("beginOTAA failed: ") + lwErrStr(st));
-      redBlinkForever = true;
       return false;
     }
     addLog("INFO", "OTAA: beginOTAA OK (keys loaded into MAC).");
@@ -513,7 +489,6 @@ bool doJoin() {
     if (st != RADIOLIB_LORAWAN_NEW_SESSION && st != RADIOLIB_LORAWAN_SESSION_RESTORED) {
       addLog("ERROR", String("activateOTAA failed: ") + lwErrStr(st));
       addLog("ERROR", "Check TTN keys, region, sub-band, gateway coverage, and 'Resets join nonces' if testing.");
-      redBlinkForever = true;
       return false;
     }
     addLog("UP", st == RADIOLIB_LORAWAN_NEW_SESSION
@@ -523,13 +498,11 @@ bool doJoin() {
     st = lorawan->beginABP(binDevAddr, nullptr, nullptr, binNwkSKey, binAppSKey);
     if (st != RADIOLIB_ERR_NONE) {
       addLog("ERROR", String("beginABP failed: ") + lwErrStr(st));
-      redBlinkForever = true;
       return false;
     }
     st = lorawan->activateABP();
     if (st != RADIOLIB_ERR_NONE) {
       addLog("ERROR", String("activateABP failed: ") + lwErrStr(st));
-      redBlinkForever = true;
       return false;
     }
     addLog("INFO", "ABP session activated (no Join-Accept; DevAddr + session keys programmed).");
@@ -559,11 +532,7 @@ bool doJoin() {
   }
   // ===================================
 
-  saveLwBuffers();
-  
-  systemJoined = true;  // LED: Green ON when joined
-  redBlinkForever = false;  // Clear any previous error flag
-  
+  saveLwBuffers();               
   return true;
 }
 
@@ -573,7 +542,6 @@ void doLeave() {
   g_radioPhyReady = false;
   memset(&dlTracker, 0, sizeof(dlTracker));
   addLog("INFO", "Left LoRaWAN — session cleared. Re-Join required.");
-  systemJoined = false;
 }
 
 // ─── Uplink interval ──────────────────────────────────────────────────────────
@@ -1097,10 +1065,7 @@ void handleForceUplink() {
     if (st == RADIOLIB_ERR_NONE) {
       addLog("INFO", "Force uplink OK - no downlink queued");
       dlTracker.downlinkReceived = false;
-    } else if (st > 0 && downLen > 0) {
-      activityActive = true;
-      Serial.println(">>> DOWNLINK DETECTED - LED SHOULD BLINK <<<");
-      
+    } else if (st > 0) {
       String hx, asc;
       for (size_t i = 0; i < downLen; i++) {
         char b[4];
@@ -1114,8 +1079,8 @@ void handleForceUplink() {
       uint8_t rxFPort = (uint8_t)st;
       addDownlink(t, hx.c_str(), asc.c_str(), (int)downLen, rxFPort);
       
-      Serial.println(asc);
-      Serial0.println(asc);
+      Serial.println(asc);               // already in addDownlink, but keep
+      Serial0.println(asc);             // --- ADDED FOR PICO FORWARDING
       Serial.print("[PICO] Sent via Serial0 (force): ");
       Serial.println(asc);
       
@@ -1129,20 +1094,88 @@ void handleForceUplink() {
       digitalWrite(PIN_LED2, HIGH);
       delay(80);
       digitalWrite(PIN_LED2, LOW);
-    } else if (st > 0) {
-      addLog("DEBUG", "MAC command received (no app payload)");
     } else {
       addLog("ERROR", String("Force uplink failed: ") + lwErrStr(st));
-      redBlinkForever = true;
     }
     
     g_lastUplinkMs = millis();
     saveLwBuffers();
   } else {
     addLog("ERROR", "Cannot force uplink - device not activated");
-    redBlinkForever = true;
   }
   server.send(200, "application/json", "{\"ok\":true}");
+}
+
+enum LedState {
+  LED_IDLE_OK,
+  LED_BLINK_TX,
+  LED_BLINK_DL,
+  LED_ERROR,
+  LED_JOINING
+};
+
+LedState ledState = LED_IDLE_OK;
+bool greenState = false;
+unsigned long lastBlink = 0;
+
+void setLedError() {
+  ledState = LED_ERROR;
+  digitalWrite(PIN_LED_RED, HIGH);
+  digitalWrite(PIN_LED_GREEN, LOW);
+}
+
+void setLedOk() {
+  ledState = LED_IDLE_OK;
+  digitalWrite(PIN_LED_RED, LOW);
+  digitalWrite(PIN_LED_GREEN, HIGH);
+}
+
+void setLedJoining() {
+  ledState = LED_JOINING;
+  digitalWrite(PIN_LED_RED, LOW);
+  digitalWrite(PIN_LED_GREEN, LOW);
+}
+
+void setLedTx() {
+  ledState = LED_BLINK_TX;
+}
+
+void setLedDownlink() {
+  ledState = LED_BLINK_DL;
+}
+
+void updateLeds() {
+  unsigned long now = millis();
+
+  switch (ledState) {
+
+    case LED_IDLE_OK:
+      digitalWrite(PIN_LED_RED, LOW);
+      digitalWrite(PIN_LED_GREEN, HIGH);
+      break;
+
+    case LED_JOINING:
+      if (now - lastBlink > 500) {
+        lastBlink = now;
+        greenState = !greenState;
+        digitalWrite(PIN_LED_GREEN, greenState);
+      }
+      break;
+
+    case LED_BLINK_TX:
+    case LED_BLINK_DL:
+      if (now - lastBlink > 150) {
+        lastBlink = now;
+        greenState = !greenState;
+        digitalWrite(PIN_LED_GREEN, greenState);
+      }
+      break;
+
+    case LED_ERROR:
+      digitalWrite(PIN_LED_RED, HIGH);
+      digitalWrite(PIN_LED_GREEN, LOW);
+      break;
+  }
 }
 
 // ─── setup / loop ────────────────────────────────────────────────────────────
@@ -1158,11 +1191,13 @@ void setup() {
   digitalWrite(PIN_LED1, LOW);
   digitalWrite(PIN_LED2, LOW);
 
-  // Initialize status LEDs
-  pinMode(LED_RED, OUTPUT);
-  pinMode(LED_GREEN, OUTPUT);
-  digitalWrite(LED_RED, HIGH);    // RED OFF (active LOW)
-  digitalWrite(LED_GREEN, HIGH);  // GREEN OFF
+  pinMode(PIN_LED_RED, OUTPUT);
+  pinMode(PIN_LED_GREEN, OUTPUT);
+
+  digitalWrite(PIN_LED_RED, LOW);
+  digitalWrite(PIN_LED_GREEN, LOW);
+
+  setLedJoining();
 
   addLog("INIT", "RAK3112 LoRaWAN portal boot");
   addLog("INIT", String("Serial baud=") + cfg.serialBaud);
@@ -1228,20 +1263,9 @@ void doPeriodicUplink() {
   dlTracker.uplinkFPort = cfg.fPort;
 
   if (st == RADIOLIB_ERR_NONE) {
-    addLog("INFO", "Uplink OK — no downlink payload queued at TTN.");
+    addLog("INFO", "Uplink OK — RX windows opened, no downlink payload queued at TTN.");
     dlTracker.downlinkReceived = false;
-  } else if (st > 0 && downLen > 0) {
-    // ========== DOWNLINK RECEIVED - BLINK GREEN LED ==========
-    Serial.println(">>> DOWNLINK PAYLOAD RECEIVED - BLINKING GREEN LED <<<");
-    
-    // BLINK GREEN LED
-    for (int blink = 0; blink < 7; blink++) {
-      digitalWrite(LED_GREEN, LOW);   // ON
-      delay(100);
-      digitalWrite(LED_GREEN, HIGH);  // OFF
-      delay(100);
-    }
-    
+  } else if (st > 0) {
     String hx, asc;
     for (size_t i = 0; i < downLen; i++) {
       char b[4];
@@ -1257,9 +1281,10 @@ void doPeriodicUplink() {
     
     addDownlink(t, hx.c_str(), asc.c_str(), (int)downLen, rxFPort);
     
+    // --- ADDED FOR PICO FORWARDING: send the ASCII command to Pico ---
     if (downLen > 0) {
       Serial0.println(asc);
-      Serial.print("[PICO] Sent via Serial0 (downlink): ");
+      Serial.print("[PICO] Sent via Serial0 (periodic): ");
       Serial.println(asc);
     }
     
@@ -1271,21 +1296,17 @@ void doPeriodicUplink() {
     strncpy(dlTracker.lastDownlinkHex, hx.c_str(), sizeof(dlTracker.lastDownlinkHex)-1);
     strncpy(dlTracker.lastDownlinkAscii, asc.c_str(), sizeof(dlTracker.lastDownlinkAscii)-1);
     
-    addLog("DOWN", String("Downlink from TTN: ") + downLen +
-                   " B port=" + rxFPort + " hex=" + hx + " ascii='" + asc + "'");
+    if (downLen > 0) {
+      addLog("DOWN", String("Downlink from TTN: ") + downLen +
+                     " B port=" + rxFPort + " hex=" + hx + " ascii='" + asc + "'");
+    } else {
+      addLog("DOWN", String("Downlink window: MAC command only (no app payload), st=") + st);
+    }
     digitalWrite(PIN_LED2, HIGH);
     delay(80);
     digitalWrite(PIN_LED2, LOW);
-    
-    // Return to steady green
-    digitalWrite(LED_GREEN, LOW);
-    // ===================================================
-    
-  } else if (st > 0) {
-    addLog("DEBUG", "MAC command only (no LED blink)");
   } else {
     addLog("ERROR", String("sendReceive failed: ") + lwErrStr(st));
-    redBlinkForever = true;
   }
 
   saveLwBuffers();
@@ -1310,8 +1331,6 @@ void checkClassCDownlink() {
   LoRaWANEvent_t downlinkEvent;
   int16_t state = lorawan->getDownlinkClassC(downlinkPayload, &downlinkLen, &downlinkEvent);
   if (state > 0 && downlinkLen > 0) {
-    activityActive = true;
-    
     String hx, asc;
     for (size_t i = 0; i < downlinkLen; i++) {
       char b[4];
@@ -1330,7 +1349,7 @@ void checkClassCDownlink() {
     
     // UART Output - Class C Downlink
     Serial.println(asc);
-    Serial0.println(asc);
+    Serial0.println(asc); // --- ADDED FOR PICO FORWARDING
     Serial.print("[PICO] Sent via Serial0 (Class C): ");
     Serial.println(asc);
     
@@ -1343,8 +1362,6 @@ void checkClassCDownlink() {
     digitalWrite(PIN_LED2, HIGH);
     delay(80);
     digitalWrite(PIN_LED2, LOW);
-  } else if (state < 0) {
-    redBlinkForever = true;
   }
 }
 
@@ -1353,26 +1370,11 @@ void loop() {
   doPeriodicUplink();
   checkClassCDownlink();
   verifyClassC();
+  updateLeds();
 
   static unsigned long lastReboot = 0;
   if (millis() - lastReboot > 86400000UL) { // 24 hours
     lastReboot = millis();
     ESP.restart();
-  }
-
-  // LED status update
-  if (redBlinkForever) {
-    // INFINITE RED BLINK ON ERROR
-    if (millis() - lastGreenBlink >= 500) {
-      lastGreenBlink = millis();
-      digitalWrite(LED_RED, !digitalRead(LED_RED));
-    }
-    digitalWrite(LED_GREEN, HIGH);  // GREEN OFF
-  } else if (systemJoined) {
-    digitalWrite(LED_RED, HIGH);    // RED OFF
-    digitalWrite(LED_GREEN, LOW);   // GREEN STEADY ON
-  } else {
-    digitalWrite(LED_RED, HIGH);    // RED OFF
-    digitalWrite(LED_GREEN, HIGH);  // GREEN OFF
   }
 }
